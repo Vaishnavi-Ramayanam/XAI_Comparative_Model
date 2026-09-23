@@ -1,0 +1,144 @@
+{
+  "model_name": "Random Forest",
+  "target_definition": "fail = 1 if final grade G3 < 10 else 0",
+  "failure_threshold": 10,
+  "selected_features": [
+    "studytime",
+    "failures",
+    "absences",
+    "famsup",
+    "internet",
+    "higher",
+    "schoolsup",
+    "health",
+    "goout",
+    "sex"
+  ],
+  "expected_input_types": {
+    "studytime": "integer (1-4)",
+    "failures": "integer (0-4)",
+    "absences": "integer (0-93)",
+    "famsup": "categorical (yes/no)",
+    "internet": "categorical (yes/no)",
+    "higher": "categorical (yes/no)",
+    "schoolsup": "categorical (yes/no)",
+    "health": "integer (1-5)",
+    "goout": "integer (1-5)",
+    "sex": "categorical (F/M)"
+  },
+  "categorical_options": {
+    "famsup": [
+      "yes",
+      "no"
+    ],
+    "internet": [
+      "yes",
+      "no"
+    ],
+    "higher": [
+      "yes",
+      "no"
+    ],
+    "schoolsup": [
+      "yes",
+      "no"
+    ],
+    "sex": [
+      "F",
+      "M"
+    ]
+  },
+  "test_metrics": {
+    "Random Forest": {
+      "Accuracy": 0.8404907975460123,
+      "Precision": 0.4444444444444444,
+      "Recall": 0.16,
+      "Specificity": 0.9637681159420289,
+      "F1-Score": 0.23529411764705882,
+      "Balanced Accuracy": 0.5618840579710145,
+      "MCC": 0.19527053329690947,
+      "ROC-AUC": 0.7395652173913044,
+      "PR-AUC": 0.3742859571119124
+    },
+    "CatBoost": {
+      "Accuracy": 0.8466257668711656,
+      "Precision": 0.5,
+      "Recall": 0.16,
+      "Specificity": 0.9710144927536232,
+      "F1-Score": 0.24242424242424243,
+      "Balanced Accuracy": 0.5655072463768116,
+      "MCC": 0.21853351172228838,
+      "ROC-AUC": 0.7104347826086956,
+      "PR-AUC": 0.3469652648804396
+    },
+    "Logistic Regression": {
+      "Accuracy": 0.8466257668711656,
+      "Precision": 0.5,
+      "Recall": 0.16,
+      "Specificity": 0.9710144927536232,
+      "F1-Score": 0.24242424242424243,
+      "Balanced Accuracy": 0.5655072463768116,
+      "MCC": 0.21853351172228838,
+      "ROC-AUC": 0.7057971014492753,
+      "PR-AUC": 0.3509879204772453
+    },
+    "XGBoost": {
+      "Accuracy": 0.8220858895705522,
+      "Precision": 0.35714285714285715,
+      "Recall": 0.2,
+      "Specificity": 0.9347826086956522,
+      "F1-Score": 0.2564102564102564,
+      "Balanced Accuracy": 0.5673913043478261,
+      "MCC": 0.17333499541194058,
+      "ROC-AUC": 0.6420289855072463,
+      "PR-AUC": 0.2666026132329408
+    },
+    "Decision Tree": {
+      "Accuracy": 0.7668711656441718,
+      "Precision": 0.27586206896551724,
+      "Recall": 0.32,
+      "Specificity": 0.8478260869565217,
+      "F1-Score": 0.2962962962962963,
+      "Balanced Accuracy": 0.5839130434782609,
+      "MCC": 0.1581312187186962,
+      "ROC-AUC": 0.5789855072463769,
+      "PR-AUC": 0.19257034059657288
+    }
+  },
+  "local_explanation_example": {
+    "increasing_failure_risk": [
+      [
+        "goout",
+        0.03043746932385223
+      ],
+      [
+        "health",
+        0.016086729446594415
+      ]
+    ],
+    "decreasing_failure_risk": [
+      [
+        "failures",
+        -0.05325593136665284
+      ],
+      [
+        "studytime",
+        -0.03990388876325295
+      ],
+      [
+        "schoolsup_no",
+        -0.019681211594668728
+      ],
+      [
+        "schoolsup_yes",
+        -0.017550076926946725
+      ],
+      [
+        "higher_no",
+        -0.013543621630950629
+      ]
+    ]
+  },
+  "random_state": 42,
+  "use_period_grades": false
+}

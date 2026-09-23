@@ -1,0 +1,21 @@
+# Core data handling
+pandas>=2.0,<3.0
+numpy>=1.24,<3.0
+ucimlrepo>=0.0.6
+
+# Machine learning
+scikit-learn>=1.3,<2.0
+xgboost>=2.0,<3.0
+catboost>=1.2,<2.0
+
+# Explainable AI
+shap>=0.44,<1.0
+
+# Visualization
+matplotlib>=3.7,<4.0
+
+# Model persistence
+joblib>=1.3,<2.0
+
+# Dashboard
+streamlit>=1.30,<2.0
