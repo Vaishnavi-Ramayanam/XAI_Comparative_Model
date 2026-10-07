@@ -2,7 +2,7 @@
 app.py — Explainable Student Failure Prediction System (Streamlit dashboard)
 
 Run with:
-    streamlit run src/app.py
+    streamlit run app.py
 
 Loads the trained pipeline and artifacts produced by train.py.
 Does NOT retrain models.
@@ -22,9 +22,7 @@ import matplotlib.pyplot as plt
 # Config
 # ---------------------------------------------------------------------------
 SRC_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(SRC_DIR)
 ARTIFACTS_DIR = os.path.join(SRC_DIR, "artifacts")
-REPORTS_DIR = os.path.join(PROJECT_ROOT, "reports")
 MODEL_PATH = os.path.join(ARTIFACTS_DIR, "model.pkl")
 FEATURES_PATH = os.path.join(ARTIFACTS_DIR, "feature_names.pkl")
 RESULTS_PATH = os.path.join(ARTIFACTS_DIR, "model_results.csv")
@@ -183,7 +181,7 @@ def missing_artifacts_message():
     missing = [name for name, path in required.items() if not os.path.exists(path)]
     st.error(
         "Training artifacts are missing. Please run `python train.py` first to "
-        "generate them in the `src/artifacts/` directory."
+        "generate them in the `artifacts/` directory."
     )
     if missing:
         st.info("Missing files: " + ", ".join(missing))
@@ -395,7 +393,8 @@ elif page == "Predict Student Risk":
         try:
             raw_row = build_input_row(selected_features, inputs)
             proba = float(model.predict_proba(raw_row)[0, 1])
-            pred_class = int(model.predict(raw_row)[0])
+            decision_threshold = float(metadata.get("decision_threshold", 0.5))
+            pred_class = int(proba >= decision_threshold)
 
             st.session_state.prediction = {
                 "proba": proba,
@@ -553,6 +552,16 @@ elif page == "Model Performance":
         use_container_width=True,
     )
 
+    deployed = metadata.get("model_name", "Unknown")
+    st.markdown("### Why this hybrid was selected")
+    st.write(
+        f"**{deployed}** achieved the strongest deployment score among the hybrid "
+        "candidates. The score prioritizes failure-class F1 and recall, then balanced "
+        "accuracy, PR-AUC, and MCC. This gives a more appropriate early-warning "
+        "trade-off than selecting only by accuracy or ROC-AUC. The result table is "
+        "retained because another model may lead on an individual metric."
+    )
+
     # Best-per-metric callouts
     c1, c2, c3 = st.columns(3)
     for col, name, container in [
@@ -565,12 +574,13 @@ elif page == "Model Performance":
             container.metric(name, best["Model"], f"{best[col]:.4f}")
 
     st.divider()
-    st.markdown("### Generated Reports")
+    st.markdown("### Plots from artifacts/")
 
     plot_files = [
         ("confusion_matrix.png", "Confusion Matrix"),
         ("roc_curves.png", "ROC Curves"),
         ("model_comparison.png", "Model Metric Comparison"),
+        ("hybrid_model_comparison.png", "Hybrid Model Comparison"),
         ("feature_importance.png", "Feature Importance"),
         ("shap_summary.png", "SHAP Summary"),
         ("shap_bar.png", "SHAP Bar"),
@@ -578,25 +588,25 @@ elif page == "Model Performance":
 
     any_plot = False
     for fname, caption in plot_files:
-        path = os.path.join(REPORTS_DIR, fname)
+        path = os.path.join(ARTIFACTS_DIR, fname)
         if os.path.exists(path):
             any_plot = True
             st.markdown(f"**{caption}**")
-            st.image(path, width="stretch")
+            st.image(path, use_container_width=True)
 
     if not any_plot:
-        st.info("No plots found in reports/. Run src/train.py to generate them.")
+        st.info("No plots found in artifacts/. Run train.py to generate them.")
 
     st.divider()
     st.markdown("### Individual Metric Comparisons")
     metric_columns = st.columns(2)
     for index, metric in enumerate(COMPARISON_METRICS):
         filename = "metric_" + metric.lower().replace("-", "_").replace(" ", "_") + ".png"
-        path = os.path.join(REPORTS_DIR, filename)
+        path = os.path.join(ARTIFACTS_DIR, filename)
         if os.path.exists(path):
             with metric_columns[index % 2]:
                 st.markdown(f"**{metric}**")
-                st.image(path, width="stretch")
+                st.image(path, use_container_width=True)
 
 
 # ---------------------------------------------------------------------------
@@ -646,7 +656,8 @@ elif page == "About":
     st.write(
         "Stratified train/test split. ROC-AUC is computed from predicted "
         "probabilities. Best model is selected using a weighted combination of "
-        "ROC-AUC, F1-Score, and Recall — prioritizing identification of at-risk students."
+        "F1, recall, balanced accuracy, PR-AUC, and MCC, with the decision threshold "
+        "tuned on out-of-fold training predictions."
     )
 
     st.markdown("### Explainable AI (SHAP)")

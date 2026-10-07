@@ -3,11 +3,12 @@ train.py — Explainable Student Failure Prediction System
 Final-year Data Science project.
 
 Predicts whether a student is at risk of failing.
-Produces src/artifacts/ model files and reports/ evaluation graphs.
+Produces artifacts/ with model, preprocessor, metadata, SHAP plots, and metrics.
 """
 
 import os
 import json
+import shutil
 import warnings
 import joblib
 import numpy as np
@@ -16,16 +17,19 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from ucimlrepo import fetch_ucirepo
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import (train_test_split, StratifiedKFold,
+                                     cross_val_predict, GridSearchCV)
+from sklearn.base import clone
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.impute import SimpleImputer
 from sklearn.feature_selection import SelectKBest, mutual_info_classif
 from sklearn.linear_model import LogisticRegression
+from sklearn.neural_network import MLPClassifier
 from sklearn.tree import DecisionTreeClassifier
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import (RandomForestClassifier, VotingClassifier,
+                              StackingClassifier, HistGradientBoostingClassifier)
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score,
     f1_score, roc_auc_score, confusion_matrix,
@@ -44,7 +48,6 @@ SRC_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SRC_DIR)
 ARTIFACTS_DIR = os.path.join(SRC_DIR, "artifacts")
 REPORTS_DIR = os.path.join(PROJECT_ROOT, "reports")
-DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 os.makedirs(ARTIFACTS_DIR, exist_ok=True)
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
@@ -78,25 +81,19 @@ DEPLOYABLE_FEATURES = [
 # ---------------------------------------------------------------------------
 
 def load_uci_data():
-    """Load UCI Student Performance (id=320) and return a combined DataFrame."""
-    local_path = os.path.join(DATA_DIR, "student-por.csv")
-    if os.path.exists(local_path):
-        print(f"[load] Loading local UCI dataset: {local_path}")
-        df = pd.read_csv(local_path, sep=";")
-        print(f"[load] UCI shape: {df.shape}")
-        return df
-
-    print("[load] Fetching UCI Student Performance (id=320)...")
-    student_data = fetch_ucirepo(id=320)
-
-    # Original combined dataframe is available in .data.original
-    # or we can reconstruct from features + targets.
-    df = student_data.data.original.copy()
-
-    # The UCI dataset has both Math and Portuguese rows (649 total after dedup).
-    # We keep both; school + subject can be inferred from G3 patterns if needed,
-    # but for harmonization we just use the merged rows.
-    print(f"[load] UCI shape: {df.shape}")
+    """Load both prescribed local UCI subject files; never substitute remote data."""
+    data_dir = os.path.join(PROJECT_ROOT, "data")
+    frames = []
+    for filename, subject in [("student-mat.csv", "mathematics"),
+                              ("student-por.csv", "portuguese")]:
+        path = os.path.join(data_dir, filename)
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Required prescribed dataset missing: {path}")
+        part = pd.read_csv(path, sep=";")
+        part["subject"] = subject
+        frames.append(part)
+    df = pd.concat(frames, ignore_index=True).drop_duplicates()
+    print(f"[load] Local UCI shape: {df.shape} (Math + Portuguese)")
     return df
 
 
@@ -423,39 +420,72 @@ def evaluate_model(pipeline, X_test, y_test, model_name):
 
 def train_and_evaluate(X_train, X_test, y_train, y_test,
                        numeric_cols, categorical_cols):
-    """Train all five models, return results, fitted pipelines, and predictions."""
-    models = {
-        "Logistic Regression": LogisticRegression(
-            max_iter=1000, random_state=RANDOM_STATE
-        ),
-        "Decision Tree": DecisionTreeClassifier(
-            random_state=RANDOM_STATE
-        ),
-        "Random Forest": RandomForestClassifier(
-            n_estimators=200, random_state=RANDOM_STATE
-        ),
-        "XGBoost": None,  # placeholder; import below
-        "CatBoost": None,
-    }
+    """Train five baselines and three distinct hybrid combinations."""
+    lr = LogisticRegression(max_iter=1000, class_weight="balanced", random_state=RANDOM_STATE)
+    dt = DecisionTreeClassifier(max_depth=6, min_samples_leaf=8,
+                                class_weight="balanced", random_state=RANDOM_STATE)
+    rf = RandomForestClassifier(n_estimators=250, min_samples_leaf=3,
+                                class_weight="balanced_subsample", n_jobs=-1,
+                                random_state=RANDOM_STATE)
+    hgb = HistGradientBoostingClassifier(max_iter=180, max_leaf_nodes=15,
+        learning_rate=.04, class_weight="balanced", random_state=RANDOM_STATE)
+    models = {"Logistic Regression": lr, "Decision Tree": dt,
+              "Random Forest": rf, "Histogram Gradient Boosting": hgb,
+              "CatBoost": None}
 
     # Import optional libraries
     try:
-        from xgboost import XGBClassifier
-        models["XGBoost"] = XGBClassifier(
-            n_estimators=200, random_state=RANDOM_STATE,
-            use_label_encoder=False, eval_metric="logloss"
-        )
-    except ImportError:
-        print("[warn] xgboost not installed; skipping XGBoost.")
-
-    try:
         from catboost import CatBoostClassifier
-        models["CatBoost"] = CatBoostClassifier(
-            iterations=200, random_state=RANDOM_STATE, verbose=0,
-            allow_writing_files=False,
-        )
+        models["CatBoost"] = CatBoostClassifier(iterations=180, depth=5,
+            learning_rate=.04, auto_class_weights="Balanced", random_seed=RANDOM_STATE,
+            verbose=0, allow_writing_files=False)
     except ImportError:
         print("[warn] catboost not installed; skipping CatBoost.")
+
+    # Multiple hybrid candidates are mandatory for Review-3.  Each combines
+    # different inductive biases; stacking learns a meta-combination.
+    if hgb is not None:
+        models["Hybrid A: LR+RF+HGB Voting"] = VotingClassifier(
+            [("lr", clone(lr)), ("rf", clone(rf)), ("hgb", clone(hgb))],
+            voting="soft", weights=[1, 2, 2], n_jobs=-1)
+        models["Hybrid C: LR+RF+HGB Stacking"] = StackingClassifier(
+            [("lr", clone(lr)), ("rf", clone(rf)), ("hgb", clone(hgb))],
+            final_estimator=LogisticRegression(max_iter=1000, class_weight="balanced",
+                                               random_state=RANDOM_STATE),
+            stack_method="predict_proba", cv=3, n_jobs=-1)
+    if models["CatBoost"] is not None:
+        models["Hybrid B: RF+HGB+CatBoost Voting"] = VotingClassifier(
+            [("rf", clone(rf)), ("hgb", clone(hgb)),
+             ("cat", clone(models["CatBoost"]))], voting="soft", n_jobs=-1)
+
+    # Review-3 hybrid categories.  The MLPs use multiple hidden layers and are
+    # therefore deep feed-forward neural networks for this tabular problem.
+    dnn_a = MLPClassifier(hidden_layer_sizes=(64, 32, 16), activation="relu",
+        solver="adam", alpha=.001, learning_rate_init=.001, max_iter=500,
+        early_stopping=True, validation_fraction=.15, n_iter_no_change=25,
+        random_state=RANDOM_STATE)
+    dnn_b = MLPClassifier(hidden_layer_sizes=(96, 48, 24), activation="tanh",
+        solver="adam", alpha=.003, learning_rate_init=.0007, max_iter=500,
+        early_stopping=True, validation_fraction=.15, n_iter_no_change=25,
+        random_state=RANDOM_STATE + 7)
+    models["Hybrid D (ML+DL): RF+DNN Voting"] = VotingClassifier(
+        [("rf", clone(rf)), ("dnn", clone(dnn_a))], voting="soft",
+        weights=[2, 1], n_jobs=-1)
+    models["Hybrid E (DL+DL): Dual-DNN Voting"] = VotingClassifier(
+        [("dnn_relu", clone(dnn_a)), ("dnn_tanh", clone(dnn_b))],
+        voting="soft", n_jobs=-1)
+    models["Hybrid F (DL+Optimization): Grid-Tuned DNN"] = GridSearchCV(
+        MLPClassifier(solver="adam", max_iter=450, early_stopping=True,
+                      validation_fraction=.15, n_iter_no_change=20,
+                      random_state=RANDOM_STATE),
+        {"hidden_layer_sizes": [(64, 32), (96, 48, 24)],
+         "activation": ["relu", "tanh"], "alpha": [.001, .01]},
+        scoring="f1", cv=3, n_jobs=-1, refit=True)
+    models["Hybrid G (ML+Optimization): Grid-Tuned RF"] = GridSearchCV(
+        RandomForestClassifier(n_estimators=250, class_weight="balanced_subsample",
+                               n_jobs=-1, random_state=RANDOM_STATE),
+        {"max_depth": [None, 8], "min_samples_leaf": [2, 5],
+         "max_features": ["sqrt", .7]}, scoring="f1", cv=3, n_jobs=-1, refit=True)
 
     results = []
     fitted = {}
@@ -466,8 +496,38 @@ def train_and_evaluate(X_train, X_test, y_train, y_test,
             continue
         print(f"[train] Fitting {name}...")
         pipe = build_pipeline(model, numeric_cols, categorical_cols)
+        # Tune the operating threshold using out-of-fold training predictions;
+        # held-out test labels never influence this choice.
+        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
+        oof = cross_val_predict(pipe, X_train, y_train, cv=cv,
+                                method="predict_proba", n_jobs=1)[:, 1]
+        candidates = []
+        for threshold in np.arange(.20, .701, .01):
+            oof_pred = (oof >= threshold).astype(int)
+            f1 = f1_score(y_train, oof_pred, zero_division=0)
+            bal = balanced_accuracy_score(y_train, oof_pred)
+            candidates.append((.6 * f1 + .4 * bal, float(threshold)))
+        threshold = max(candidates)[1]
         pipe.fit(X_train, y_train)
-        metrics, y_pred, y_proba = evaluate_model(pipe, X_test, y_test, name)
+        y_proba = pipe.predict_proba(X_test)[:, 1]
+        y_pred = (y_proba >= threshold).astype(int)
+        tn, fp, fn, tp = confusion_matrix(y_test, y_pred, labels=[0, 1]).ravel()
+        category = "Heterogeneous Ensemble" if name.startswith("Hybrid") else "Baseline"
+        for label in ["ML+DL", "DL+DL", "DL+Optimization", "ML+Optimization"]:
+            if label in name:
+                category = label
+        metrics = {
+            "Model": name, "Type": "Hybrid" if name.startswith("Hybrid") else "Baseline",
+            "Hybrid Category": category,
+            "Threshold": threshold, "Accuracy": accuracy_score(y_test, y_pred),
+            "Precision": precision_score(y_test, y_pred, zero_division=0),
+            "Recall": recall_score(y_test, y_pred, zero_division=0),
+            "Specificity": tn / (tn + fp), "F1-Score": f1_score(y_test, y_pred, zero_division=0),
+            "Balanced Accuracy": balanced_accuracy_score(y_test, y_pred),
+            "MCC": matthews_corrcoef(y_test, y_pred), "ROC-AUC": roc_auc_score(y_test, y_proba),
+            "PR-AUC": average_precision_score(y_test, y_proba),
+            "TN": int(tn), "FP": int(fp), "FN": int(fn), "TP": int(tp),
+        }
         results.append(metrics)
         fitted[name] = pipe
         predictions[name] = {"y_pred": y_pred, "y_proba": y_proba}
@@ -500,12 +560,11 @@ def select_deployment_model(results_df, fitted):
     """
     # Composite score: weight ROC-AUC and F1 and Recall
     results_df = results_df.copy()
-    results_df["deploy_score"] = (
-        0.4 * results_df["ROC-AUC"]
-        + 0.35 * results_df["F1-Score"]
-        + 0.25 * results_df["Recall"]
-    )
-    best_row = results_df.loc[results_df["deploy_score"].idxmax()]
+    results_df["deploy_score"] = (0.30 * results_df["F1-Score"]
+        + 0.25 * results_df["Recall"] + 0.20 * results_df["Balanced Accuracy"]
+        + 0.15 * results_df["PR-AUC"] + 0.10 * results_df["MCC"])
+    eligible = results_df[results_df["Type"] == "Hybrid"]
+    best_row = eligible.loc[eligible["deploy_score"].idxmax()]
     best_name = best_row["Model"]
     print(f"\n[select] Deployment model: {best_name} "
           f"(deploy_score={best_row['deploy_score']:.4f})")
@@ -516,13 +575,13 @@ def select_deployment_model(results_df, fitted):
 # 9. Plots & SHAP
 # ---------------------------------------------------------------------------
 
-def plot_confusion_matrix(pipeline, X_test, y_test, model_name):
-    y_pred = pipeline.predict(X_test)
+def plot_confusion_matrix(pipeline, X_test, y_test, model_name, threshold=0.5):
+    y_pred = (pipeline.predict_proba(X_test)[:, 1] >= threshold).astype(int)
     cm = confusion_matrix(y_test, y_pred)
     disp = ConfusionMatrixDisplay(confusion_matrix=cm)
     disp.plot(cmap="Blues")
     plt.title(f"Confusion Matrix — {model_name}")
-    path = os.path.join(REPORTS_DIR, "confusion_matrix.png")
+    path = os.path.join(ARTIFACTS_DIR, "confusion_matrix.png")
     plt.savefig(path, bbox_inches="tight")
     plt.close()
     print(f"[plot] Saved {path}")
@@ -540,7 +599,7 @@ def plot_roc_curves(predictions, y_test):
     plt.ylabel("True Positive Rate")
     plt.title("ROC Curves — All Models")
     plt.legend(loc="lower right")
-    path = os.path.join(REPORTS_DIR, "roc_curves.png")
+    path = os.path.join(ARTIFACTS_DIR, "roc_curves.png")
     plt.savefig(path, bbox_inches="tight")
     plt.close()
     print(f"[plot] Saved {path}")
@@ -557,7 +616,7 @@ def plot_model_comparison(results_df):
     ax.set_ylabel("Score")
     ax.set_title("Model Metric Comparison")
     ax.legend(loc="lower right")
-    path = os.path.join(REPORTS_DIR, "model_comparison.png")
+    path = os.path.join(ARTIFACTS_DIR, "model_comparison.png")
     plt.savefig(path, bbox_inches="tight")
     plt.close()
     print(f"[plot] Saved {path}")
@@ -577,10 +636,21 @@ def plot_model_comparison(results_df):
         fig.tight_layout()
 
         filename = "metric_" + metric.lower().replace("-", "_").replace(" ", "_") + ".png"
-        metric_path = os.path.join(REPORTS_DIR, filename)
+        metric_path = os.path.join(ARTIFACTS_DIR, filename)
         fig.savefig(metric_path, bbox_inches="tight")
         plt.close(fig)
         print(f"[plot] Saved {metric_path}")
+
+    hybrid_df = results_df[results_df["Type"] == "Hybrid"].copy()
+    hybrid_metrics = ["Recall", "F1-Score", "Balanced Accuracy", "ROC-AUC", "PR-AUC"]
+    ax = hybrid_df.set_index("Model")[hybrid_metrics].plot(
+        kind="bar", figsize=(16, 7), rot=35, width=.82)
+    ax.set_ylim(0, 1); ax.set_ylabel("Score")
+    ax.set_title("Hybrid Model Comparison by Early-Warning Metrics")
+    ax.legend(loc="lower right"); plt.tight_layout()
+    path = os.path.join(ARTIFACTS_DIR, "hybrid_model_comparison.png")
+    plt.savefig(path, dpi=180, bbox_inches="tight"); plt.close()
+    print(f"[plot] Saved {path}")
 
 
 def generate_shap_explanations(pipeline, X_train, X_test, model_name):
@@ -638,7 +708,7 @@ def generate_shap_explanations(pipeline, X_train, X_test, model_name):
     # --- Global summary plot ---
     plt.figure()
     shap.summary_plot(shap_values, X_test_df, show=False, max_display=15)
-    path = os.path.join(REPORTS_DIR, "shap_summary.png")
+    path = os.path.join(ARTIFACTS_DIR, "shap_summary.png")
     plt.savefig(path, bbox_inches="tight")
     plt.close()
     print(f"[shap] Saved {path}")
@@ -647,7 +717,7 @@ def generate_shap_explanations(pipeline, X_train, X_test, model_name):
     plt.figure()
     shap.summary_plot(shap_values, X_test_df, plot_type="bar",
                       show=False, max_display=15)
-    path = os.path.join(REPORTS_DIR, "shap_bar.png")
+    path = os.path.join(ARTIFACTS_DIR, "shap_bar.png")
     plt.savefig(path, bbox_inches="tight")
     plt.close()
     print(f"[shap] Saved {path}")
@@ -708,7 +778,7 @@ def plot_feature_importance(pipeline, numeric_cols, categorical_cols):
     plt.yticks(range(n_show), [names[i] for i in idx][::-1])
     plt.xlabel("Importance")
     plt.title("Feature Importance")
-    path = os.path.join(REPORTS_DIR, "feature_importance.png")
+    path = os.path.join(ARTIFACTS_DIR, "feature_importance.png")
     plt.savefig(path, bbox_inches="tight")
     plt.close()
     print(f"[plot] Saved {path}")
@@ -748,6 +818,11 @@ def save_artifacts(pipeline, selected_features, results_df,
     # Metadata
     metadata = {
         "model_name": selected_model_name,
+        "model_type": "Hybrid",
+        "decision_threshold": float(results_df.loc[
+            results_df["Model"] == selected_model_name, "Threshold"].iloc[0]),
+        "selection_rule": "Best hybrid by weighted F1, recall, balanced accuracy, PR-AUC and MCC",
+        "dataset_files": ["student-mat.csv", "student-por.csv"],
         "target_definition": "fail = 1 if final grade G3 < 10 else 0",
         "failure_threshold": PASS_THRESHOLD,
         "selected_features": selected_features,
@@ -778,7 +853,7 @@ def save_artifacts(pipeline, selected_features, results_df,
     with open(os.path.join(ARTIFACTS_DIR, "metadata.json"), "w") as f:
         json.dump(metadata, f, indent=2)
 
-    print("[save] Model artifacts saved to src/artifacts/ and graphs to reports/")
+    print("[save] All artifacts saved to artifacts/")
 
 
 # ---------------------------------------------------------------------------
@@ -792,22 +867,8 @@ def main():
 
     # 1. Load
     uci = load_uci_data()
-    # Additional datasets: wrap in try/except so missing sources don't
-    # block the core UCI pipeline; if they fail, we proceed with UCI only.
-    additional_dfs = []
-    additional_names = []
-    for loader, name in [
-        (load_additional_dataset_1, "additional_1"),
-        (load_additional_dataset_2, "additional_2"),
-    ]:
-        try:
-            additional_dfs.append(loader())
-            additional_names.append(name)
-        except Exception as e:
-            print(f"[warn] Skipping {name}: {e}")
-
-    all_dfs = [uci] + additional_dfs
-    all_names = ["uci"] + additional_names
+    all_dfs = [uci]
+    all_names = ["uci-math-and-portuguese"]
 
     # 2. Harmonize
     df = harmonize_datasets(all_dfs, all_names)
@@ -860,7 +921,8 @@ def main():
     )
 
     # 10. Plots & SHAP
-    plot_confusion_matrix(selected_pipeline, X_test, y_test, selected_name)
+    plot_confusion_matrix(selected_pipeline, X_test, y_test, selected_name,
+                          float(selected_row["Threshold"]))
     plot_roc_curves(predictions, y_test)
     plot_model_comparison(results_df)
     plot_feature_importance(selected_pipeline, numeric_cols, categorical_cols)
@@ -874,6 +936,11 @@ def main():
         selected_pipeline, selected_features, results_df,
         selected_name, local_explanation, X_train
     )
+
+    for filename in os.listdir(ARTIFACTS_DIR):
+        if filename.endswith(".png"):
+            shutil.copy2(os.path.join(ARTIFACTS_DIR, filename),
+                         os.path.join(REPORTS_DIR, filename))
 
     print("\n" + "=" * 60)
     print("TRAINING COMPLETE")
