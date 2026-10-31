@@ -8,7 +8,6 @@ Produces artifacts/ with model, preprocessor, metadata, SHAP plots, and metrics.
 
 import os
 import json
-import shutil
 import warnings
 import joblib
 import numpy as np
@@ -44,12 +43,8 @@ warnings.filterwarnings("ignore")
 # ---------------------------------------------------------------------------
 RANDOM_STATE = 42
 TEST_SIZE = 0.25
-SRC_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(SRC_DIR)
-ARTIFACTS_DIR = os.path.join(SRC_DIR, "artifacts")
-REPORTS_DIR = os.path.join(PROJECT_ROOT, "reports")
+ARTIFACTS_DIR = "artifacts"
 os.makedirs(ARTIFACTS_DIR, exist_ok=True)
-os.makedirs(REPORTS_DIR, exist_ok=True)
 
 # UCI Student Performance: G3 is the final grade (0–20).
 # Pass threshold: >= 10 (Portuguese grading scale, 10/20 is passing).
@@ -82,7 +77,10 @@ DEPLOYABLE_FEATURES = [
 
 def load_uci_data():
     """Load both prescribed local UCI subject files; never substitute remote data."""
-    data_dir = os.path.join(PROJECT_ROOT, "data")
+    here = os.path.dirname(__file__)
+    data_dir = os.path.join(here, "repo_upload", "data")
+    if not os.path.isdir(data_dir):
+        data_dir = os.path.join(os.path.dirname(here), "data")
     frames = []
     for filename, subject in [("student-mat.csv", "mathematics"),
                               ("student-por.csv", "portuguese")]:
@@ -936,11 +934,6 @@ def main():
         selected_pipeline, selected_features, results_df,
         selected_name, local_explanation, X_train
     )
-
-    for filename in os.listdir(ARTIFACTS_DIR):
-        if filename.endswith(".png"):
-            shutil.copy2(os.path.join(ARTIFACTS_DIR, filename),
-                         os.path.join(REPORTS_DIR, filename))
 
     print("\n" + "=" * 60)
     print("TRAINING COMPLETE")

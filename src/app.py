@@ -21,8 +21,7 @@ import matplotlib.pyplot as plt
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-SRC_DIR = os.path.dirname(os.path.abspath(__file__))
-ARTIFACTS_DIR = os.path.join(SRC_DIR, "artifacts")
+ARTIFACTS_DIR = "artifacts"
 MODEL_PATH = os.path.join(ARTIFACTS_DIR, "model.pkl")
 FEATURES_PATH = os.path.join(ARTIFACTS_DIR, "feature_names.pkl")
 RESULTS_PATH = os.path.join(ARTIFACTS_DIR, "model_results.csv")
